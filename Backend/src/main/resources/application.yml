@@ -24,14 +24,26 @@ spring:
     console:
       enabled: true
       path: /h2-console
+  
+  # Cache Configuration
+  cache:
+    type: simple
+    cache-names:
+      - cryptos
+      - cryptosBySymbol
+      - allCryptos
+      - topCryptos
 
-# Logging
+# Logging com padrão detalhado
 logging:
   level:
     root: INFO
     com.coingecko: DEBUG
     org.springframework.web: INFO
+    org.springframework.cache: DEBUG
     org.hibernate.SQL: DEBUG
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
 
 # API CoinGecko
 coingecko:
@@ -39,8 +51,19 @@ coingecko:
     enabled: true
     base-url: https://api.coingecko.com/api/v3
 
-# Server
+# Server com documentação OpenAPI
 server:
   port: 8080
   servlet:
     context-path: /
+
+# SpringDoc OpenAPI (Swagger)
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+    operations-sorter: method
+    tags-sorter: alpha
+

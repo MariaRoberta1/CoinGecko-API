@@ -1,67 +1,85 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, memo } from 'react';
 import { useCrypto } from '../../context/CryptoContext';
 import { getAllCryptos, getTopCryptos } from '../../services/apiService';
+import { MESSAGES } from '../../constants/app.constants';
 import CryptoCard from '../CryptoCard/CryptoCard';
+import LoadingSpinner from '../LoadingSpinner/LoadingSpinner';
+import EmptyState from '../EmptyState/EmptyState';
 import './CryptoList.css';
 
 /**
  * Componente: CryptoList
- * Responsabilidade: Listar e exibir criptomoedas
+ * Responsabilidade: Listar e exibir criptomoedas com gerenciamento de modo de visualização
  * SOLID - Single Responsibility: Apenas gerencia lista
- * Padrão: Composition - composto por CryptoCard
+ * SOLID - Composition: Composto por CryptoCard e componentes de estado
+ * Otimização: Memoizado para evitar re-renders
  */
 function CryptoList({ onSelectCrypto }) {
-  const { 
-    state: { cryptos, searchResults, loading, error, filter },
+  const {
+    state: { cryptos, searchResults, loading, error },
     setCryptos,
     setLoading,
-    setError
+    setError,
   } = useCrypto();
-  
+
   const [viewMode, setViewMode] = useState('all'); // 'all' ou 'top'
-  
+
+  // Carrega criptomoedas iniciais
   useEffect(() => {
     loadCryptos();
   }, []);
-  
-  const loadCryptos = async () => {
+
+  const loadCryptos = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
       const data = await getAllCryptos();
-      setCryptos(data);
+      setCryptos(data || []);
     } catch (err) {
-      setError(`Erro ao carregar criptomoedas: ${err.message}`);
+      console.error('Erro ao carregar criptomoedas:', err);
+      setError(`${MESSAGES.ERROR_LOADING}: ${err.message}`);
     } finally {
       setLoading(false);
     }
-  };
-  
-  const loadTopCryptos = async () => {
+  }, [setCryptos, setLoading, setError]);
+
+  const loadTopCryptos = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
       const data = await getTopCryptos();
-      setCryptos(data);
+      setCryptos(data || []);
     } catch (err) {
+      console.error('Erro ao carregar top criptomoedas:', err);
       setError(`Erro ao carregar top criptos: ${err.message}`);
     } finally {
       setLoading(false);
     }
-  };
-  
-  // Definir quais criptomoedas exibir
-  const displayedCryptos = searchResults.length > 0 ? searchResults : cryptos;
-  
-  const handleViewChange = async (mode) => {
-    setViewMode(mode);
-    if (mode === 'top') {
-      await loadTopCryptos();
+  }, [setCryptos, setLoading, setError]);
+
+  const handleViewChange = useCallback(
+    async (mode) => {
+      setViewMode(mode);
+      if (mode === 'top') {
+        await loadTopCryptos();
+      } else {
+        await loadCryptos();
+      }
+    },
+    [loadCryptos, loadTopCryptos]
+  );
+
+  const handleRefresh = useCallback(() => {
+    if (viewMode === 'top') {
+      loadTopCryptos();
     } else {
-      await loadCryptos();
+      loadCryptos();
     }
-  };
-  
+  }, [viewMode, loadCryptos, loadTopCryptos]);
+
+  // Determina quais criptomoedas exibir (resultados de busca ou lista completa)
+  const displayedCryptos = searchResults.length > 0 ? searchResults : cryptos;
+
   return (
     <div className="crypto-list-container">
       <div className="list-header">
@@ -70,44 +88,48 @@ function CryptoList({ onSelectCrypto }) {
           <button
             className={`view-btn ${viewMode === 'all' ? 'active' : ''}`}
             onClick={() => handleViewChange('all')}
+            aria-label="Visualizar todas as criptomoedas"
           >
             Todas
           </button>
           <button
             className={`view-btn ${viewMode === 'top' ? 'active' : ''}`}
             onClick={() => handleViewChange('top')}
+            aria-label="Visualizar top 10 criptomoedas"
           >
             Top 10
           </button>
           <button
             className="view-btn refresh-btn"
-            onClick={loadCryptos}
+            onClick={handleRefresh}
+            disabled={loading}
+            aria-label="Recarregar lista"
+            title="Recarregar"
           >
-            🔄 Recarregar
+            🔄 {loading ? 'Atualizando...' : 'Recarregar'}
           </button>
         </div>
       </div>
-      
+
       {error && (
-        <div className="error-message">
+        <div className="error-message" role="alert">
           ⚠️ {error}
         </div>
       )}
-      
-      {loading && (
-        <div className="loading">
-          <div className="spinner"></div>
-          <p>Carregando criptomoedas...</p>
-        </div>
-      )}
-      
+
+      {loading && <LoadingSpinner message={MESSAGES.LOADING} />}
+
       {!loading && displayedCryptos.length === 0 && (
-        <div className="empty-state">
-          <p>📭 Nenhuma criptomoeda encontrada</p>
-        </div>
+        <EmptyState
+          message={
+            searchResults.length === 0
+              ? MESSAGES.EMPTY_SEARCH
+              : 'Nenhuma criptomoeda encontrada'
+          }
+        />
       )}
-      
-      <div className="crypto-list">
+
+      <div className="crypto-list" role="grid">
         {displayedCryptos.map((crypto) => (
           <CryptoCard
             key={crypto.id}
@@ -116,14 +138,14 @@ function CryptoList({ onSelectCrypto }) {
           />
         ))}
       </div>
-      
+
       {displayedCryptos.length > 0 && (
         <div className="list-footer">
-          Total: {displayedCryptos.length} criptomoeda(s)
+          Total: <strong>{displayedCryptos.length}</strong> criptomoeda(s)
         </div>
       )}
     </div>
   );
 }
 
-export default CryptoList;
+export default memo(CryptoList);

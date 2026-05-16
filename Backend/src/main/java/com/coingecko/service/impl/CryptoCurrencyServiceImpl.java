@@ -1,6 +1,7 @@
 package com.coingecko.service.impl;
 
 import com.coingecko.dto.CryptoCurrencyDTO;
+import com.coingecko.exception.ResourceNotFoundException;
 import com.coingecko.model.Cryptocurrency;
 import com.coingecko.model.CryptoCurrencyPrice;
 import com.coingecko.repository.CryptocurrencyRepository;
@@ -8,8 +9,9 @@ import com.coingecko.repository.CryptoCurrencyPriceRepository;
 import com.coingecko.service.CoinGeckoApiService;
 import com.coingecko.service.CryptoCurrencyService;
 import com.coingecko.service.DtoMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,15 +23,14 @@ import java.util.stream.Collectors;
 /**
  * Implementação: CryptoCurrencyServiceImpl
  * Padrão: Service Pattern - encapsula a lógica de negócio
- * Responsabilidade: Gerenciar operações com criptomoedas
+ * Responsabilidade: Gerenciar operações com criptomoedas com cache e validações
  * SOLID - Dependency Injection: Recebe dependências via construtor
  * SOLID - Single Responsibility: Apenas gerencia criptomoedas
  */
+@Slf4j
 @Service
 @Transactional
 public class CryptoCurrencyServiceImpl implements CryptoCurrencyService {
-    
-    private static final Logger logger = LoggerFactory.getLogger(CryptoCurrencyServiceImpl.class);
     
     private final CryptocurrencyRepository cryptoRepository;
     private final CryptoCurrencyPriceRepository priceRepository;
@@ -48,44 +49,56 @@ public class CryptoCurrencyServiceImpl implements CryptoCurrencyService {
     }
     
     @Override
+    @Cacheable(value = "cryptos", key = "#id")
     public Optional<CryptoCurrencyDTO> findById(String id) {
+        log.debug("Buscando cripto por ID: {}", id);
         return cryptoRepository.findById(id)
-            .map(dtoMapper::toDTO);
+                .map(dtoMapper::toDTO);
     }
     
     @Override
+    @Cacheable(value = "cryptosBySymbol", key = "#symbol")
     public Optional<CryptoCurrencyDTO> findBySymbol(String symbol) {
+        log.debug("Buscando cripto por símbolo: {}", symbol);
         return cryptoRepository.findBySymbol(symbol)
-            .map(dtoMapper::toDTO);
+                .map(dtoMapper::toDTO);
     }
     
     @Override
+    @Cacheable(value = "allCryptos")
     public List<CryptoCurrencyDTO> findAll() {
+        log.debug("Listando todas as criptomoedas");
         return cryptoRepository.findAll()
-            .stream()
-            .map(dtoMapper::toDTO)
-            .collect(Collectors.toList());
+                .stream()
+                .map(dtoMapper::toDTO)
+                .collect(Collectors.toList());
     }
     
     @Override
     public List<CryptoCurrencyDTO> searchBySymbol(String symbol) {
+        log.debug("Buscando criptos com símbolo: {}", symbol);
         return cryptoRepository.findBySymbolContainingIgnoreCase(symbol)
-            .stream()
-            .map(dtoMapper::toDTO)
-            .collect(Collectors.toList());
+                .stream()
+                .map(dtoMapper::toDTO)
+                .collect(Collectors.toList());
     }
     
     @Override
+    @Cacheable(value = "topCryptos")
     public List<CryptoCurrencyDTO> getTopCryptos() {
+        log.debug("Obtendo top 10 criptomoedas");
         return cryptoRepository.findByOrderByMarketCapRankAsc()
-            .stream()
-            .limit(10)
-            .map(dtoMapper::toDTO)
-            .collect(Collectors.toList());
+                .stream()
+                .limit(10)
+                .map(dtoMapper::toDTO)
+                .collect(Collectors.toList());
     }
     
     @Override
+    @CacheEvict(value = {"allCryptos", "topCryptos"}, allEntries = true)
     public CryptoCurrencyDTO save(CryptoCurrencyDTO cryptoDTO) {
+        log.info("Salvando criptomoeda: {}", cryptoDTO.getId());
+        
         Cryptocurrency crypto = dtoMapper.toEntity(cryptoDTO);
         crypto.setLastUpdated(LocalDateTime.now());
         
@@ -99,36 +112,41 @@ public class CryptoCurrencyServiceImpl implements CryptoCurrencyService {
     }
     
     @Override
+    @CacheEvict(value = {"cryptos", "cryptosBySymbol", "allCryptos", "topCryptos"}, allEntries = true)
     public void delete(String id) {
+        log.info("Deletando criptomoeda: {}", id);
+        if (!cryptoRepository.existsById(id)) {
+            throw new ResourceNotFoundException("Criptomoeda", "ID", id);
+        }
         cryptoRepository.deleteById(id);
     }
     
     @Override
+    @CacheEvict(value = {"cryptos", "cryptosBySymbol", "allCryptos", "topCryptos"}, allEntries = true)
     public void updateFromCoinGecko(String id) {
+        log.info("Atualizando criptomoeda de CoinGecko: {}", id);
+        
         Optional<CryptoCurrencyDTO> apiData = coinGeckoApiService.getCryptocurrencyData(id);
         
         if (apiData.isPresent()) {
             CryptoCurrencyDTO dto = apiData.get();
-            Optional<Cryptocurrency> existing = cryptoRepository.findById(id);
+            Cryptocurrency existing = cryptoRepository.findById(id)
+                    .orElseThrow(() -> new ResourceNotFoundException("Criptomoeda", "ID", id));
             
-            if (existing.isPresent()) {
-                Cryptocurrency crypto = existing.get();
-                crypto.setLastUpdated(LocalDateTime.now());
-                
-                if (dto.getPrice() != null) {
-                    priceRepository.findByCryptocurrency_Id(id)
+            existing.setLastUpdated(LocalDateTime.now());
+            
+            if (dto.getPrice() != null) {
+                priceRepository.findByCryptocurrency_Id(id)
                         .ifPresentOrElse(
-                            price -> updateCryptoPrice(price, dto),
-                            () -> saveCryptoPriceFromDTO(crypto, dto)
+                                price -> updateCryptoPrice(price, dto),
+                                () -> saveCryptoPriceFromDTO(existing, dto)
                         );
-                }
-                
-                cryptoRepository.save(crypto);
-                logger.info("Atualizado dados de cripto: {}", id);
-            } else {
-                CryptoCurrencyDTO saved = save(dto);
-                logger.info("Cripto criada: {}", saved.getId());
             }
+            
+            cryptoRepository.save(existing);
+            log.info("Atualizado dados de cripto: {}", id);
+        } else {
+            log.warn("Dados não encontrados na API CoinGecko para: {}", id);
         }
     }
     
@@ -144,6 +162,7 @@ public class CryptoCurrencyServiceImpl implements CryptoCurrencyService {
         price.setTimestamp(LocalDateTime.now());
         
         priceRepository.save(price);
+        log.debug("Preço salvo para cripto: {}", crypto.getId());
     }
     
     private void saveCryptoPriceFromDTO(Cryptocurrency crypto, CryptoCurrencyDTO dto) {
@@ -158,6 +177,7 @@ public class CryptoCurrencyServiceImpl implements CryptoCurrencyService {
         price.setTimestamp(LocalDateTime.now());
         
         priceRepository.save(price);
+        log.debug("Preço inicial salvo para cripto: {}", crypto.getId());
     }
     
     private void updateCryptoPrice(CryptoCurrencyPrice price, CryptoCurrencyDTO dto) {
@@ -170,5 +190,6 @@ public class CryptoCurrencyServiceImpl implements CryptoCurrencyService {
         price.setTimestamp(LocalDateTime.now());
         
         priceRepository.save(price);
+        log.debug("Preço atualizado para cripto: {}", price.getCryptocurrency().getId());
     }
 }
